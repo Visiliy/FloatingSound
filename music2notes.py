@@ -20,6 +20,6 @@ def vocall(input_audio):
             # print(pretty_midi.note_number_to_name(i.pitch), end=' ')
         last_note = i
 
-    min_num = min(notes_new)  # Находим минимальное число
-    notes_new_new = [x - min_num for x in notes_new]
-    return notes_new_new
+    differences = [notes_new[i + 1] - notes_new[i]
+                   for i in range(len(notes_new) - 1)]
+    return differences
