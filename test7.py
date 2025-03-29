@@ -1,71 +1,62 @@
-import librosa
+from fuzzywuzzy import fuzz
+import re
 import sqlite3
-import json
-from music21 import pitch, stream, note, tempo
-from time import time
 
-# Загрузка аудиофайла
-def f585(audio_path):
-    y, sr = librosa.load(audio_path, sr=None)
 
-    # Извлечение высоты тона
-    pitches, magnitudes = librosa.core.piptrack(y=y, sr=sr)
+def load_songs():
+    songs = []
+    connection = sqlite3.connect('music.db')
+    cursor = connection.cursor()
+    cursor.execute('SELECT * FROM Music')
+    music = cursor.fetchall()
+    for i in music:
+        title, text = i[1], i[2]
+        songs.append({
+            'title': title.strip(),
+            'text': text.strip(),
+            'processed_text': preprocess_text(text)
+                    })
+    connection.close()
+    return songs
 
-    # Получение доминирующих частот
-    dominant_frequencies = []
-    for t in range(pitches.shape[1]):
-        index = magnitudes[:, t].argmax()
-        pitch_freq = pitches[index, t]
-        if pitch_freq > 0:
-            dominant_frequencies.append(pitch_freq)
 
-    # Преобразование частот в ноты
-    notes = []
-    for freq in dominant_frequencies:
-        p = pitch.Pitch()
-        p.frequency = freq
-        notes.append(p.nameWithOctave)
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
-    # Создание партитуры
-    score = stream.Score()
-    part = stream.Part()
 
-    # Добавление нот в партитуру
-    for n in notes:
-        n = note.Note(n)
-        part.append(n)
+def fuzzy_search(songs, query, threshold=70, limit=10):
+    processed_query = preprocess_text(query)
+    results = []
 
-    # Добавление темпа
-    part.insert(0, tempo.MetronomeMark(number=120))
-    print(len(notes))
-    return notes
+    for song in songs:
+        
+        text_ratio = fuzz.partial_ratio(processed_query, song['processed_text'])
+        
+        combined_score = text_ratio
+        
+        if combined_score >= threshold:
+            results.append({
+                'song': song,
+                'text_score': text_ratio,
+                'combined_score': combined_score
+            })
 
-new_n = f585(f"media_files/recording_20250323_082759.wav")
+    results.sort(key=lambda x: x['combined_score'], reverse=True)
+    return results[:limit]
 
-connection = sqlite3.connect('my_database.db')
-cursor = connection.cursor()
 
-cursor.execute('SELECT * FROM Users')
-music = cursor.fetchall()
-name = ""
-main_coeff = 0
-for s in music:
-    t1 = time()
-    ar2 = json.loads(s[-1])
-    print(f'json loaded with time {time() - t1}')
-    t2 = time()
-    ar1 = new_n
-    max_coeff = 0
-    for i in range((len(ar2) - len(ar1)) // 2):
-        coeff = 0
-        for j in range(0, len(ar1)):
-            if ar1[j] == ar2[i + j]:
-                coeff += 1
-        max_coeff = max(coeff, max_coeff)
-    if max_coeff >= main_coeff:
-        main_coeff = max_coeff
-        name = s[1]
-    print(f'arr processed with time {time() - t2}')
-print(name)
-connection.close()
+def display_results(results):
+    if not results:
+        return "Ничего не найдено."
+    
+    return results[-1]["song"]["title"]
 
+
+if __name__ == "__main__":
+    songs = load_songs()
+    search_query = input("\nВведите фразу для поиска (или 'q' для выхода): ")
+    found_songs = fuzzy_search(songs, search_query, threshold=60)
+    print(display_results(found_songs))

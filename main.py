@@ -1,9 +1,10 @@
 from flask import *
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 import json
-import numpy as np
 import json
+import os
+from fuzzywuzzy import fuzz
+import re
+import sqlite3
 from deepgram import (
     DeepgramClient,
     PrerecordedOptions,
@@ -11,156 +12,152 @@ from deepgram import (
 )
 from random import randrange
 from flask_cors import CORS
-import os
 from datetime import datetime
-import re
-import pandas as pd
-import numpy as np
-import faiss
-from pymorphy2 import MorphAnalyzer
-from nltk.corpus import stopwords
-from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI, HTTPException
-from pathlib import Path
-import pickle
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = (
     "5457fae2a71f9331bf4bf3dd6813f90abeb33839f4608755ce301b9321c671791673817685w47uer6919hdhifj"
 )
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
+db = SQLAlchemy(app)
 CORS(app)
 
-MODEL_NAME = 'paraphrase-multilingual-MiniLM-L12-v2'
-DATA_FILE = 'songs.txt'
-INDEX_FILE = 'faiss_index.bin'
-EMBEDDINGS_FILE = 'embeddings.pkl'
-METADATA_FILE = 'metadata.pkl'
 
-morph = MorphAnalyzer()
-stop_words = {
-    'и', 'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 
-    'то', 'все', 'она', 'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же',
-    'вы', 'за', 'бы', 'по', 'только', 'ее', 'мне', 'было', 'вот', 'от',
-    'меня', 'еще', 'нет', 'о', 'из', 'ему', 'теперь', 'когда', 'даже',
-    'ну', 'вдруг', 'ли', 'если', 'уже', 'или', 'ни', 'быть', 'был', 
-    'него', 'до', 'вас', 'нибудь', 'опять', 'уж', 'вам', 'ведь', 'там', 
-    'потом', 'себя', 'ничего', 'ей', 'может', 'они', 'тут', 'где', 'есть',
-    'надо', 'ней', 'для', 'мы', 'тебя', 'их', 'чем', 'была', 'сам', 'чтоб',
-    'без', 'будто', 'чего', 'раз', 'тоже', 'себе', 'под', 'будет', 'ж', 
-    'тогда', 'кто', 'этот', 'того', 'потому', 'этого', 'какой', 'совсем',
-    'ним', 'здесь', 'этом', 'один', 'почти', 'мой', 'тем', 'чтобы', 'нее',
-    'сейчас', 'были', 'куда', 'зачем', 'всех', 'никогда', 'можно', 'при',
-    'наконец', 'два', 'об', 'другой', 'хоть', 'после', 'над', 'больше',
-    'тот', 'через', 'эти', 'нас', 'про', 'всего', 'них', 'какая', 'много',
-    'разве', 'три', 'эту', 'моя', 'впрочем', 'хорошо', 'свою', 'этой',
-    'перед', 'иногда', 'лучше', 'чуть', 'том', 'нельзя', 'такой', 'им',
-    'более', 'всегда', 'конечно', 'всю', 'между'
-}
+class Users(db.Model):
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    nickname = db.Column(db.String())
+    password = db.Column(db.String())
+    favoritemusic = db.Column(db.Text())
 
-def preprocess(text):
-    if pd.isna(text):
-        return ''
-    text = str(text).lower()
-    text = re.sub(r'[^а-яё\s]', '', text)
-    words = [morph.parse(word)[0].normal_form for word in text.split() if word not in stop_words]
-    return ' '.join(words)
+    def __repr__(self):
+        return f"<users {self.id}>"
+    
 
-def load_or_create_data():
-    if Path(INDEX_FILE).exists() and Path(EMBEDDINGS_FILE).exists() and Path(METADATA_FILE).exists():
-        print("Загружаем сохранённые данные...")
-        index = faiss.read_index(INDEX_FILE)
-        with open(EMBEDDINGS_FILE, 'rb') as f:
-            embeddings = pickle.load(f)
-        with open(METADATA_FILE, 'rb') as f:
-            metadata = pickle.load(f)
-        return index, embeddings, metadata['titles'], metadata['texts']
-    
-    print("Создаём новую базу...")
-    df = pd.read_csv(DATA_FILE, sep='|', header=None, names=['title', 'text'])
-    texts = df['text'].tolist()
-    titles = df['title'].tolist()
-    processed_texts = [preprocess(text) for text in texts]
-    
-    model = SentenceTransformer(MODEL_NAME)
-    embeddings = model.encode(processed_texts, show_progress_bar=True)
-    embeddings = np.array(embeddings).astype('float32')
-    
-    index = faiss.IndexFlatIP(embeddings.shape[1])
-    index.add(embeddings)
-    
-    faiss.write_index(index, INDEX_FILE)
-    with open(EMBEDDINGS_FILE, 'wb') as f:
-        pickle.dump(embeddings, f)
-    with open(METADATA_FILE, 'wb') as f:
-        pickle.dump({'titles': titles, 'texts': texts}, f)
-    
-    return index, embeddings, titles, texts
+def load_songs():
+    songs = []
+    connection = sqlite3.connect('music.db')
+    cursor = connection.cursor()
+    cursor.execute('SELECT * FROM Music')
+    music = cursor.fetchall()
+    for i in music:
+        title, text = i[1], i[2]
+        songs.append({
+            'title': title.strip(),
+            'text': text.strip(),
+            'processed_text': preprocess_text(text)
+                    })
+    connection.close()
+    return songs
 
-index, embeddings, titles, texts = load_or_create_data()
-model = SentenceTransformer(MODEL_NAME)
 
-def search(query: str, top_k: int = 5) -> list[dict]:
-    try:
-        processed_query = preprocess(query)
-        query_embedding = model.encode([processed_query])[0].astype('float32').reshape(1, -1)
-        distances, indices = index.search(query_embedding, top_k)
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def fuzzy_search(songs, query, threshold=70, limit=10):
+    processed_query = preprocess_text(query)
+    results = []
+
+    for song in songs:
         
-        results = []
-        for i in range(top_k):
+        text_ratio = fuzz.partial_ratio(processed_query, song['processed_text'])
+        
+        combined_score = text_ratio
+        
+        if combined_score >= threshold:
             results.append({
-                'title': titles[indices[0][i]],
-                'text': texts[indices[0][i]],
-                'similarity': float(distances[0][i])
+                'song': song,
+                'text_score': text_ratio,
+                'combined_score': combined_score
             })
-        return results
-    except Exception as e:
-        return False
+
+    results.sort(key=lambda x: x['combined_score'], reverse=True)
+    return results[:limit]
+
+
+def display_results(results):
+    if not results:
+        return "Ничего не найдено."
+    
+    return results[-1]["song"]["title"]
+    
+
+@app.route("/login", methods=["POST"])
+def login():
+    reg = request.get_json()
+    user = Users.query.filter_by(nickname=reg["name"]).first()
+    if user:
+        if check_password_hash(user.password, reg["password"]):
+            return jsonify([True, True], 200)
+        else:
+            return jsonify([True, False], 200)
+    return jsonify([False, False], 200)
+    
+
+
+@app.route("/registration", methods=["POST"])
+def registration():
+    reg = request.get_json()
+    print(reg)
+    if Users.query.filter_by(nickname=reg["name"]).first():
+        return jsonify(False, 200)
+    users = Users(
+        nickname=reg["name"],
+        password=generate_password_hash(reg["password"]),
+        favoritemusic=json.dumps([]),
+    )
+    db.session.add(users)
+    db.session.flush()
+    db.session.commit()
+    return jsonify(True, 200)
 
 
 @app.route("/get_music", methods=["POST"])
 def get_music2():
-    try:
-        print("Ok0")
-        file = request.files['audio']
-  
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'recording_{timestamp}.wav'
-        filepath = os.path.join("media_files", filename)
+    print("Ok0")
+    file = request.files['audio']
 
-        file.save(filepath)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f'recording_{timestamp}.wav'
+    filepath = os.path.join("media_files", filename)
 
-        deepgram = DeepgramClient("8f6543bbb44982acf9560c76d000cb55c8b8f4de")
-        print("OK_test")
+    file.save(filepath)
 
-        with open(f"media_files/{filename}", "rb") as file:
-            buffer_data = file.read()
+    deepgram = DeepgramClient("8f6543bbb44982acf9560c76d000cb55c8b8f4de")
+    print("OK_test")
 
-        payload: FileSource = {
-            "buffer": buffer_data,
-        }
+    with open(f"media_files/{filename}", "rb") as file:
+        buffer_data = file.read()
 
-        options = PrerecordedOptions(
-            model="nova-2",
-            smart_format=True,
-            language="ru",
-        )
-        response = deepgram.listen.rest.v("1").transcribe_file(payload, options)
-        pattern = json.loads(response.to_json(indent=4))["results"]["channels"][0][
-            "alternatives"
-        ][0]["transcript"]
-        print(pattern)
-        print("Ok1")
-        query = pattern
-        results = search(query, 1)
-        for res in results:
-            print(f"\n🎵 {res['title']} (сходство: {res['similarity']:.2f})")
-            return jsonify([res['title'], ""], 200)
+    payload: FileSource = {
+        "buffer": buffer_data,
+    }
 
-    except:
-        return jsonify("No", 200)
+    options = PrerecordedOptions(
+        model="nova-2",
+        smart_format=True,
+        language="ru",
+    )
+    response = deepgram.listen.rest.v("1").transcribe_file(payload, options)
+    pattern = json.loads(response.to_json(indent=4))["results"]["channels"][0][
+        "alternatives"
+    ][0]["transcript"]
+    print(pattern)
+    songs = load_songs()
+    found_songs = fuzzy_search(songs, pattern, threshold=60)
+    res = display_results(found_songs)
+    print(res)
+    return jsonify(res, 200)
         
 def main():
+    # with app.app_context():
+    #     db.create_all()
     app.run(port=8090)
 
 
