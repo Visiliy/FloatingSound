@@ -64,31 +64,44 @@ def preprocess_text(text):
 
 def fuzzy_search(songs, query, notes, threshold=40, limit=10):
     processed_query = preprocess_text(query)
+    print(processed_query)
+    print(len(processed_query))
+    print(notes)
+    print(len(notes))
     results = []
+    n, t = 1, 1
+    if len(processed_query) > 20:
+        n = 0.4
+    elif 0 < len(processed_query) < 10:
+        t = 0.4
+    elif len(processed_query) == 0:
+        t = 0
+    if len(notes) < 15:
+        n = 0.4
+
+    print(t, n)
 
     for song in songs:
         
         text_ratio = fuzz.partial_ratio(processed_query, song['processed_text'])
-        notes_ratio = fuzz.partial_ratio(notes, song['processed_text'])
-        
-        combined_score = text_ratio
-        
+        notes_ratio = fuzz.partial_ratio(notes, song['soong'])
+
+        combined_score = text_ratio * t + notes_ratio * n
         if combined_score >= threshold:
             results.append({
                 'song': song,
-                'text_score': text_ratio,
                 'combined_score': combined_score
             })
 
     results.sort(key=lambda x: x['combined_score'], reverse=True)
-    return results[:limit]
+    return results[0]['song']['title']
 
 
 def display_results(results):
     if not results:
         return "Ничего не найдено."
     
-    return results[-1]["song"]["title"]
+    return results
     
 
 @app.route("/login", methods=["POST"])
@@ -131,7 +144,8 @@ def get_music2():
     filepath = os.path.join("media_files", filename)
 
     file.save(filepath)
-    notes = vocall(filepath)
+    notes = ' '.join(vocall(filepath))
+    print(notes)
 
     deepgram = DeepgramClient("8f6543bbb44982acf9560c76d000cb55c8b8f4de")
     print("OK_test")
@@ -154,7 +168,7 @@ def get_music2():
     ][0]["transcript"]
     print(pattern)
     songs = load_songs()
-    found_songs = fuzzy_search(songs, pattern, threshold=60)
+    found_songs = fuzzy_search(songs, pattern, notes, threshold=50)
     res = display_results(found_songs)
     print(res)
     return jsonify(res, 200)
