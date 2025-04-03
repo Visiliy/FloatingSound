@@ -1,4 +1,4 @@
-#import torch
+import torch
 from basic_pitch.inference import predict
 from basic_pitch import ICASSP_2022_MODEL_PATH
 #import pretty_midi

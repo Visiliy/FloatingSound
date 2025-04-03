@@ -15,6 +15,7 @@ from flask_cors import CORS
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from music2notes import vocall
 
 
 app = Flask(__name__)
@@ -43,11 +44,12 @@ def load_songs():
     cursor.execute('SELECT * FROM Music')
     music = cursor.fetchall()
     for i in music:
-        title, text = i[1], i[2]
+        title, text, soong = i[1], i[2], i[3]
         songs.append({
             'title': title.strip(),
             'text': text.strip(),
-            'processed_text': preprocess_text(text)
+            'processed_text': preprocess_text(text),
+            'soong': soong
                     })
     connection.close()
     return songs
@@ -60,13 +62,14 @@ def preprocess_text(text):
     return text.strip()
 
 
-def fuzzy_search(songs, query, threshold=70, limit=10):
+def fuzzy_search(songs, query, notes, threshold=40, limit=10):
     processed_query = preprocess_text(query)
     results = []
 
     for song in songs:
         
         text_ratio = fuzz.partial_ratio(processed_query, song['processed_text'])
+        notes_ratio = fuzz.partial_ratio(notes, song['processed_text'])
         
         combined_score = text_ratio
         
@@ -128,6 +131,7 @@ def get_music2():
     filepath = os.path.join("media_files", filename)
 
     file.save(filepath)
+    notes = vocall(filepath)
 
     deepgram = DeepgramClient("8f6543bbb44982acf9560c76d000cb55c8b8f4de")
     print("OK_test")
